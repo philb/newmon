@@ -1,0 +1,24 @@
+This is quickmon, a packet monitor for Econet networks.
+
+There is no real documentation or support; you're essentially on your own.  But I will most likely listen to your problems and suggestions with some degree of tolerance.
+
+The command-line options are:
+
+-cooked		Display data in a more human-friendly form.
+-raw		Don't try to interpret the packets; simply display the data
+		as it comes.
+
+-ascii		Display (printable) data as ASCII characters.
+-hex		Display all data, printable or not, in hex.
+
+-colour		Colourise the display. Different types of data and statuses
+		are displayed in different colours.
+-mono		Suppress colour.
+
+-station ...	Only display traffic to or from one of the specified stations.
+
+I have tested quickmon on RISC OS 3.1 only.  It has very little OS dependence, so chances are good it will work on RISC OS 2 or Arthur.  It has a lot of hardware dependence, so the odds are it will *not* work on a RiscPC.  It definitely won't work with Ethernet, Nexus or anything like that.
+
+--
+Philip Blundell <pjb27@cam.ac.uk>
+phone 01223 302522/0973 869202

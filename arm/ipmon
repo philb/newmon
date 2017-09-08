@@ -1,0 +1,258 @@
+;	arm.ipmon
+;	© 1995 Philip Blundell
+
+		OUTPUT	MODULE
+
+STRZ	DEFM	string
+		DCS	string
+		DCB	0
+	ENDM
+
+ESCAPE	DEFM	byte
+		DCB	27
+		DCB	byte
+	ENDM
+
+swi_base	CONST	0xCA600
+
+
+header		DCD	0
+		DCD	init
+		DCD	0
+		DCD	0
+		DCD	title
+		DCD	helpstring
+		DCD	0
+		DCD	swi_base
+		DCD	decode_packet
+		DCD	swi_table
+
+title		STRZ	"IPMonitor"
+
+helpstring	DCS	"IP Monitor"
+		DCB	9
+		STRZ	"1.00 (26 Mar 1995) © Philip Blundell"
+		ALIGN
+
+init		STMFD	R13!,{R14}
+		MOV	R0,#6
+		MOV	R3,#&40
+		SWI	"XOS_Module"
+		STRVC	R2,[R12]
+		LDMFD	R13!,{PC}
+
+swi_table	STRZ	"IPMonitor"
+		STRZ	"DecodePacket"
+		DCB	0
+		ALIGN
+
+		; R0 -> packet
+		; R1    length
+decode_packet	STMFD	R13!,{R1-R12,R14}
+		MOV	R11,R1		; R11 = total length of packet
+		MOV	R10,R0		; R10 = pointer to start of packet
+		CMP	R11,#24
+		BLT	short_header
+		LDRB	R0,[R10]
+		AND	R1,R0,#&F0
+		MOV	R1,R1,LSR #4
+		TEQ	R1,#4
+		BNE	bad_version
+		AND	R1,R0,#&F
+		CMP	R1,#5
+		BLT	badheaderlen
+		ADD	R9,R10,R1,LSL #2  ; R9 = pointer to start of data
+		SUB	R11,R11,R1,LSL #2
+
+		LDR	R0,[R10,#12]
+		BL	print_ip_addr
+		SWI	"XOS_WriteS"
+		STRZ	" -> "
+		ALIGN
+		LDR	R0,[R10,#16]
+		BL	print_ip_addr
+		SWI	256+32
+		LDRB	R1,[R10,#9]
+		MOV	R0,#0
+		TEQ	R1,#1
+		ADREQ	R0,proto_icmp
+		TEQ	R1,#6
+		ADREQ	R0,proto_tcp
+		TEQ	R1,#17
+		ADREQ	R0,proto_udp
+		MOVS	R0,R0
+		SWINE	"XOS_Write0"
+		BNE	\known_type
+		SWI	"XOS_WriteS"
+		STRZ	"unknown ("
+		ALIGN
+		MOV	R0,R1
+		LDR	R1,[R12]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+')'
+\known_type	SWI	"XOS_WriteS"
+		STRZ	" packet"
+		ALIGN
+		LDRB	R0,[R10,#11]
+		LDRB	R1,[R10,#10]
+		ORR	R8,R0,R1,LSL #8		; R8 = his xsum
+
+		MOV	R0,#0
+		STRB	R0,[R10,#10]
+		STRB	R0,[R10,#11]
+
+		MOV	R0,#0
+		MOV	R7,#0
+\xsloop		LDRB	R2,[R10,R7]
+		ADD	R7,R7,#1
+		LDRB	R1,[R10,R7]
+		ADD	R7,R7,#1
+		ORR	R1,R1,R2,LSL #8
+		ADD	R0,R0,R1
+		TEQ	R7,#20
+		BNE	\xsloop
+\eac_loop	MOVS	R1,R0,LSR #16
+		BICNE	R0,R0,#&FF0000
+		BICNE	R0,R0,#&FF000000
+		ADDNE	R0,R0,R1
+		BNE	\eac_loop
+		EOR	R0,R0,#&FF
+		EOR	R0,R0,#&FF00
+		TEQ	R0,R8
+		BNE	xs_error
+		LDRB	R0,[R10,#9]
+		TEQ	R0,#1
+		BEQ	do_icmp
+		MOVS	R11,R11
+		LDMEQFD	R13!,{R1-R12,PC}
+do_data		SWI	"XOS_NewLine"
+		MOV	R0,#18
+		BL	tabto
+		SWI	"XOS_WriteS"
+		STRZ	"data "
+		ALIGN
+\data_loop	LDRB	R0,[R9],#1
+		LDR	R1,[R12]
+		MOV	R2,#4
+		SWI	"XOS_ConvertHex2"
+		SWI	"XOS_Write0"
+		SUBS	R11,R11,#1
+		BNE	\data_loop
+		LDMFD	R13!,{R1-R12,PC}
+
+proto_icmp	STRZ	"ICMP"
+proto_udp	STRZ	"UDP"
+proto_tcp	STRZ	"TCP"
+		ALIGN
+
+do_icmp		CMP	R11,#4
+		BLT	short_packet
+		SWI	256+':'
+		SWI	256+32
+		LDRB	R0,[R9]
+		TEQ	R0,#8
+		ADREQ	R0,request
+		BEQ	icmp_echo
+		MOVS	R0,R0
+		ADREQ	R0,reply
+		BEQ	icmp_echo
+		LDR	R1,[R12]
+		MOV	R2,#5
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		B	do_data
+
+request		STRZ	"Request"
+reply		STRZ	"Reply"
+		ALIGN
+
+icmp_echo	CMP	R11,#8
+		BLT	short_packet
+		SWI	"XOS_WriteS"
+		STRZ	"Echo "
+		ALIGN
+		SWI	"XOS_Write0"
+		SWI	256+32
+		LDRB	R1,[R9,#7]
+		LDRB	R0,[R9,#6]
+		ORR	R0,R0,R1,LSL #8
+		LDR	R1,[R12]
+		MOV	R2,#10
+		SWI	"XOS_ConvertCardinal2"
+		SWI	"XOS_Write0"
+		SWI	256+32
+		SWI	256+'('
+		LDRB	R1,[R9,#5]
+		LDRB	R0,[R9,#4]
+		ORR	R0,R0,R1,LSL #8
+		LDR	R1,[R12]
+		MOV	R2,#5
+		SWI	"XOS_ConvertHex4"
+		SWI	"XOS_Write0"
+		SWI	256+')'
+		ADD	R9,R9,#8
+		SUB	R11,R11,#8
+		B	do_data
+
+xs_error	SWI	"XOS_WriteS"
+		STRZ	"Checksum error"
+		ALIGN
+		LDMFD	R13!,{R1-R12,PC}
+
+short_header	SWI	"XOS_WriteS"
+		STRZ	"Short header"
+		ALIGN
+		LDMFD	R13!,{R1-R12,PC}
+
+short_packet	SWI	"XOS_WriteS"
+		STRZ	"Short packet"
+		ALIGN
+		LDMFD	R13!,{R1-R12,PC}
+
+bad_version	SWI	"XOS_WriteS"
+		STRZ	"Unknown IP version"
+		ALIGN
+		LDMFD	R13!,{R1-R12,PC}
+
+badheaderlen	SWI	"XOS_WriteS"
+		STRZ	"Bad IP header length"
+		ALIGN
+		LDMFD	R13!,{R1-R12,PC}
+
+print_ip_addr	STMFD	R13!,{R0-R2,R10,R14}
+		MOV	R10,R0
+		LDR	R1,[R12]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		MOV	R10,R10,LSR #8
+		AND	R0,R10,#&FF
+		LDR	R1,[R12]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		MOV	R10,R10,LSR #8
+		AND	R0,R10,#&FF
+		LDR	R1,[R12]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		MOV	R10,R10,LSR #8
+		AND	R0,R10,#&FF
+		LDR	R1,[R12]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		LDMFD	R13!,{R0-R2,R10,PC}
+
+tabto		STMFD	R13!,{R0,R14}
+		MOVS	R0,R0
+\loop		SWINE	256+32
+		SUBNES	R0,R0,#1
+		BNE	\loop
+		LDMFD	R13!,{R0,PC}

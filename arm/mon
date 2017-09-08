@@ -1,0 +1,1883 @@
+;	arm.mon
+;	© 1995 Philip Blundell
+
+		OUTPUT	MODULE
+
+STRZ	DEFM	string
+		DCS	string
+		DCB	0
+	ENDM
+
+ESCAPE	DEFM	byte
+		DCB	27
+		DCB	byte
+	ENDM
+
+IPMonitor_DecodePacket	CONST	0xCA600
+
+sr2val		CONST	0x23	; PSE 2byte mode ClrRxStatus
+cr1		CONST	0
+sr1		CONST	0
+cr2		CONST	4
+sr2		CONST	4
+cr3		CONST	4	; overloaded with cr2
+datreg		CONST	8
+cr4		CONST	12
+
+F_cooked	CONST	0x1
+F_colour	CONST	0x2
+F_dispASCII	CONST	0x4
+F_cutoff	CONST	0x8
+F_station	CONST	0x10
+F_lockout	CONST	0x20
+F_fast		CONST	0x40
+F_isASCII	CONST	0x80
+F_filternext	CONST	0x100
+F_serviceWasMe	CONST	0x200
+F_otherFIQclaim	CONST	0x400
+F_debug		CONST	0x4000
+F_needtick	CONST	0x8000
+F_noidle	CONST	0x10000
+F_isIP		CONST	0x20000
+F_doIP		CONST	0x40000
+
+RxBufferSize	CONST	0x8000
+
+FW_bufferstart	CONST	0xD0
+FW_bufferend	CONST	0xD4
+
+W_flags		CONST	0x0
+W_rxBuffer	CONST	0x4		; circular data buffer
+W_scratchspace	CONST	0x8		; 128 bytes temp space
+W_convbuffer	CONST	0xC		; 80 bytes temp space
+W_state		CONST	0x10
+W_TxStn		CONST	0x14
+W_TxNet		CONST	0x15
+W_RxStn		CONST	0x16
+W_RxNet		CONST	0x17
+W_Cb		CONST	0x18
+W_port		CONST	0x19
+W_fgcol		CONST	0x1a
+W_bgcol		CONST	0x1b
+W_currentOp	CONST	0x1c
+W_cutoffLen	CONST	0x20
+W_bytesToGet	CONST	0x24 		; how many bytes do we want?
+W_dataPtr	CONST	0x28
+W_dataBuffer	CONST	0x2C		; where do we put them?
+W_screenWidth	CONST	0x30
+W_screenHeight	CONST	0x34
+W_filterlist	CONST	0x38
+W_filtercount	CONST	0x3C
+W_nextstate	CONST	0x40
+W_callmeback	CONST	0x44
+W_datasize	CONST	0x48
+W_total_size	CONST	0x4C
+
+S_idle			CONST	0x0
+S_w_DestStn		CONST	0x0
+S_w_DestNet		CONST	0x1
+S_w_TxStn		CONST	0x2
+S_w_TxNet		CONST	0x3
+S_w_Cb			CONST	0x4
+S_w_Port		CONST	0x5
+S_w_AckDestStn		CONST	0x10
+S_w_AckDestNet		CONST	0x11
+S_w_AckTxStn		CONST	0x12
+S_w_AckTxNet		CONST	0x13
+S_w_AckDataFirst	CONST	0x14
+S_w_DataDestStn		CONST	0x20
+S_w_DataDestNet		CONST	0x21
+S_w_DataTxStn		CONST	0x22
+S_w_DataTxNet		CONST	0x23
+S_w_DataByte		CONST	0x25
+S_w_DataStore		CONST	0x26
+S_w_AsciiByte		CONST	0x27
+S_w_AsciiStore		CONST	0x28
+S_w_BroadcastCb		CONST	0x40
+S_w_BroadcastPort	CONST	0x41
+S_cutoff		CONST	0x50
+
+header		DCD	0
+		DCD	init
+		DCD	final
+		DCD	0
+		DCD	title
+		DCD	helpstring
+		DCD	commands
+		DCD	0
+
+title		STRZ	"Quickmon"
+
+helpstring	DCS	"Quickmon"
+		DCB	9
+		STRZ	"1.00 (26 Mar 1995) © Philip Blundell"
+
+mon_help	DCS	"*"
+		ESCAPE	0
+		DCS	" starts"
+		ESCAPE	2
+		DCS	"network monitor. Escape stops it."
+		DCB	13,10
+mon_syntax	ESCAPE	30
+		DCS	"-mono|-colour] [-hex|-ascii] [-raw|-cooked] [-cutoff[ <length>]] [-debug] [-station [<sta"
+		ESCAPE	9
+		DCB	32
+		ESCAPE	13
+		DCS	">[,<sta"
+		ESCAPE	9
+		DCB	32
+		ESCAPE	13
+		DCS	"> ...]]] [-ip]"
+		DCB	0
+		ALIGN
+
+commands	STRZ	"mon"
+		ALIGN
+		DCD	startmon
+		DCB	0
+		DCB	0
+		DCB	&FF
+		DCB	0
+		DCD	mon_syntax
+		DCD	mon_help
+		DCB	0
+
+param_template	STRZ	"mono/s,colour/s,hex/s,ascii/s,raw/s,cooked/s,cutoff/ke,debug/s,station/ka,ip/s"
+		ALIGN
+
+toomany_block	DCD	0
+		STRZ	"Quickmon requires a screen mode with 16 colours or less"
+
+		ALIGN
+
+toomany		ADR	R0,toomany_block
+		LDMFD	R13!,{R1-R12,R14}
+		ORRS	PC,R14,#&10000000
+
+startmon	STMFD	R13!,{R1-R12,R14}
+		LDR	R12,[R12]
+		MOV	R1,R0
+		ADR	R0,param_template
+		LDR	R2,[R12,#W_scratchspace]
+		MOV	R3,#128
+		SWI	"XOS_ReadArgs"
+		LDMVSFD	R13!,{R1-R12,PC}
+		MOV	R1,#F_colour OR F_cooked OR F_dispASCII
+
+		LDR	R0,[R2,#0] 			; mono
+		MOVS	R0,R0
+		BICNE	R1,R1,#F_colour
+
+		LDR	R0,[R2,#4]			; colour
+		MOVS	R0,R0
+		ORRNE	R1,R1,#F_colour
+
+		LDR	R0,[R2,#8]			; hex
+		MOVS	R0,R0
+		BICNE	R1,R1,#F_dispASCII
+
+		LDR	R0,[R2,#12]			; ascii
+		MOVS	R0,R0
+		ORRNE	R1,R1,#F_dispASCII
+
+		LDR	R0,[R2,#16]			; raw
+		MOVS	R0,R0
+		BICNE	R1,R1,#F_cooked
+
+		LDR	R0,[R2,#20]			; cooked
+		MOVS	R0,R0
+		ORRNE	R1,R1,#F_cooked
+
+		LDR	R0,[R2,#24]			; cutoff
+		MOVS	R0,R0
+		ORRNE	R1,R1,#F_cutoff
+		LDRNE	R0,[R0]
+		STRNE	R0,[R12,#W_cutoffLen]
+
+		LDR	R0,[R2,#28]			; debug
+		MOVS	R0,R0
+		ORRNE	R1,R1,#F_debug
+
+		LDR	R0,[R2,#36]			; ip
+		MOVS	R0,R0
+		ORRNE	R1,R1,#F_doIP
+
+		LDR	R6,[R2,#32]			; station
+		MOVS	R6,R6
+		BEQ	\skip2
+		ORR	R1,R1,#F_station
+		MOV	R0,#0
+		STR	R0,[R12,#W_filterlist]
+		STR	R0,[R12,#W_filtercount]
+		MOV	R9,R1
+\loop1		MOV	R1,R6
+\loop		LDRB	R5,[R6]
+		TEQ	R5,#','
+		MOVEQ	R5,#' '
+		STREQB	R5,[R6]
+		MOVNES	R5,R5
+		ADDNE	R6,R6,#1
+		BNE	\loop
+		SWI	"XEconet_ReadStationNumber"
+		LDMVSFD	R13!,{R1-R12,PC}
+		MOV	R7,R2
+		MOV	R8,R3
+		LDR	R2,[R12,#W_filterlist]
+		MOV	R3,#8
+		MOVS	R2,R2
+		MOVEQ	R0,#6
+		MOVNE	R0,#13
+		SWI	"XOS_Module"
+		LDMVSFD	R13!,{R1-R12,PC}
+		STR	R2,[R12,#W_filterlist]
+		LDR	R3,[R12,#W_filtercount]
+		ADD	R2,R2,R3,LSL #3
+		STR	R7,[R2],#4
+		STR	R8,[R2]
+		ADD	R3,R3,#1
+		STR	R3,[R12,#W_filtercount]
+		MOVS	R5,R5
+		ADDNE	R6,R6,#1
+		BNE	\loop1
+		MOV	R1,R9
+\skip2
+		STR	R1,[R12,#W_flags]
+		MVN	R0,#0
+		TST	R1,#F_colour
+		BEQ	\skip
+		MOV	R1,#3				; NColour
+		SWI	"XOS_ReadModeVariable"
+		CMP	R2,#15
+		BEQ	\skip
+		BGT	toomany
+		LDR	R1,[R12,#W_flags]
+		BIC	R0,R0,#F_colour
+		STR	R1,[R12,#W_flags]
+\skip		MOV	R1,#1				; ScrRCol
+		SWI	"XOS_ReadModeVariable"
+		LDMVSFD	R13!,{R1-R12,PC}
+		STR	R2,[R12,#W_screenWidth]
+		MOV	R1,#2				; ScreenBRow
+		SWI	"XOS_ReadModeVariable"
+		LDMVSFD	R13!,{R1-R12,PC}
+		STR	R2,[R12,#W_screenHeight]
+
+		SWI	256+12
+		SWI	256+20
+		ADR	R0,chardefs
+		MOV	R1,#20
+		SWI	"XOS_WriteN"
+		B	skip_defs
+
+chardefs	DCB	23,137
+		DCB	0,24,28,254
+		DCB	28,24,0,0
+		DCB	23,128
+		DCB	3,3,6,6,&76,&1C,&C,0
+
+skip_defs	MOV	R0,#6
+		MOV	R3,#RxBufferSize
+		SWI	"XOS_Module"
+		LDMVSFD	R13!,{R1-R12,PC}
+		STR	R2,[R12,#W_rxBuffer]
+
+		BL	set_white
+
+		BL	claim_fiq
+		LDR	R9,[R12,#W_rxBuffer]
+		LDR	R10,[R12,#W_rxBuffer]
+		ADD	R10,R10,#RxBufferSize
+
+		MOV	R0,#S_w_DestStn
+		STR	R0,[R12,#W_state]
+
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_debug
+		BNE	DebugMode
+
+mainLoop	TST	R9,#3
+		BEQ	\ok
+		SWI	"XOS_WriteS"
+		STRZ	"[R9 not aligned]"
+		ALIGN
+\ok		LDRB	R0,[R9]
+		MOVS	R0,R0
+		BEQ	check_esc
+		TST	R0,#2
+		BNE	pv		; frame valid
+		TST	R0,#128
+		BNE	process_rda
+		TST	R0,#64
+		BNE	po		; overrun
+		TST	R0,#32
+		BNE	pd		; no clock
+		TST	R0,#16
+		BNE	pe		; CRC error
+		TST	R0,#8
+		BNE	pb		; abort
+		TST	R0,#4
+		BNE	pi		; idle
+		TST	R0,#1
+		BNE	process_ap
+		SWI	"XOS_WriteS"
+		STRZ	"[don't panic!]"
+		ALIGN
+pout		ADD	R9,R9,#4
+carry_on	TEQ	R9,R10
+		LDREQ	R9,[R12,#W_rxBuffer]
+check_esc	SWI	"XOS_ReadEscapeState"
+		BCC	mainLoop
+		MOV	R0,#126
+		SWI	"XOS_Byte"
+
+exitMon		BL	release_fiq
+		MOV	R0,#7
+		LDR	R2,[R12,#W_rxBuffer]
+		SWI	"XOS_Module"
+		MOV	R2,#0
+		STR	R2,[R12,#W_rxBuffer]
+		LDR	R2,[R12,#W_filterlist]
+		MOVS	R2,R2
+		MOVNE	R0,#7
+		SWINE	"XOS_Module"
+		BL	set_white
+		SWI	256+31
+		SWI	256+0
+		LDR	R0,[R12,#W_screenHeight]
+		SWI	"XOS_WriteC"
+		SWI	"XOS_NewLine"
+		LDMFD	R13!,{R1-R12,PC}
+
+DebugMode	SWI	"XOS_ReadEscapeState"
+		BCS	exitMon
+		LDRB	R0,[R9]
+		MOVS	R0,R0
+		BEQ	DebugMode
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#8
+		SWI	"XOS_ConvertHex2"
+		SWI	"XOS_Write0"
+		SWI	256+32
+		LDRB	R0,[R9,#1]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#8
+		SWI	"XOS_ConvertHex2"
+		SWI	"XOS_Write0"
+		SWI	256+32
+		LDRB	R0,[R9,#2]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#8
+		SWI	"XOS_ConvertHex2"
+		SWI	"XOS_Write0"
+		SWI	256+32
+		LDRB	R0,[R9,#3]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#8
+		SWI	"XOS_ConvertHex2"
+		SWI	"XOS_Write0"
+		LDRB	R0,[R9]
+		TST	R0,#128
+		BEQ	\no_rda
+		SWI	"XOS_WriteS"
+		STRZ	" RDA"
+		ALIGN
+\no_rda		TST	R0,#1
+		BEQ	\no_ap
+		SWI	"XOS_WriteS"
+		STRZ	" AP"
+		ALIGN
+\no_ap
+		SWI	"XOS_NewLine"
+		ADD	R9,R9,#4
+		TEQ	R9,R10
+		LDREQ	R9,[R12,#W_rxBuffer]
+		B	DebugMode
+
+set_red		STMFD	R13!,{R3,R4,R14}
+		LDRB	R3,[R12,#W_fgcol]
+		TEQ	R3,#1
+		BEQ	\skip
+		SWI	256+17
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_colour
+		SWINE	256+1
+		SWIEQ	256+7
+		MOV	R3,#1
+		STRB	R3,[R12,#W_fgcol]
+\skip		LDRB	R3,[R12,#W_bgcol]
+		MOVS	R3,R3
+		BEQ	\skip1
+		SWI	256+17
+		SWI	256+128
+		MOV	R3,#0
+		STRB	R3,[R12,#W_bgcol]
+\skip1		LDMFD	R13!,{R3,R4,PC}^
+
+set_green	STMFD	R13!,{R3,R4,R14}
+		LDRB	R3,[R12,#W_fgcol]
+		TEQ	R3,#2
+		BEQ	\skip
+		SWI	256+17
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_colour
+		SWINE	256+2
+		SWIEQ	256+7
+		MOV	R3,#2
+		STRB	R3,[R12,#W_fgcol]
+\skip		LDRB	R3,[R12,#W_bgcol]
+		MOVS	R3,R3
+		BEQ	\skip1
+		SWI	256+17
+		SWI	256+128
+		MOV	R3,#0
+		STRB	R3,[R12,#W_bgcol]
+\skip1		LDMFD	R13!,{R3,R4,PC}^
+
+set_yellow	STMFD	R13!,{R3,R4,R14}
+		LDRB	R3,[R12,#W_fgcol]
+		TEQ	R3,#3
+		BEQ	\skip
+		SWI	256+17
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_colour
+		SWINE	256+3
+		SWIEQ	256+7
+		MOV	R3,#3
+		STRB	R3,[R12,#W_fgcol]
+\skip		LDRB	R3,[R12,#W_bgcol]
+		MOVS	R3,R3
+		BEQ	\skip1
+		SWI	256+17
+		SWI	256+128
+		MOV	R3,#0
+		STRB	R3,[R12,#W_bgcol]
+\skip1		LDMFD	R13!,{R3,R4,PC}^
+
+set_purple	STMFD	R13!,{R3,R4,R14}
+		LDRB	R3,[R12,#W_fgcol]
+		TEQ	R3,#5
+		BEQ	\skip
+		SWI	256+17
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_colour
+		SWINE	256+5
+		SWIEQ	256+7
+		MOV	R3,#5
+		STRB	R3,[R12,#W_fgcol]
+\skip		LDRB	R3,[R12,#W_bgcol]
+		MOVS	R3,R3
+		BEQ	\skip1
+		SWI	256+17
+		SWI	256+128
+		MOV	R3,#0
+		STRB	R3,[R12,#W_bgcol]
+\skip1		LDMFD	R13!,{R3,R4,PC}^
+
+set_white	STMFD	R13!,{R4,R14}
+		LDRB	R3,[R12,#W_fgcol]
+		TEQ	R3,#7
+		BEQ	\skip
+		SWI	256+17
+		SWI	256+7
+		MOV	R3,#7
+		STRB	R3,[R12,#W_fgcol]
+\skip		LDRB	R3,[R12,#W_bgcol]
+		MOVS	R3,R3
+		BEQ	\skip1
+		SWI	256+17
+		SWI	256+128
+		MOV	R3,#0
+		STRB	R3,[R12,#W_bgcol]
+\skip1		LDMFD	R13!,{R4,PC}^
+
+set_reverse	STMFD	R13!,{R3,R4,R14}
+		LDRB	R3,[R12,#W_fgcol]
+		TEQ	R3,#4
+		BEQ	\skip
+		SWI	256+17
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_colour
+		SWINE	256+4
+		SWIEQ	256+0
+		MOV	R3,#4
+		STRB	R3,[R12,#W_fgcol]
+\skip		LDRB	R3,[R12,#W_bgcol]
+		TEQ	R3,#7
+		BEQ	\skip1
+		SWI	256+17
+		SWI	256+135
+		MOV	R3,#7
+		STRB	R3,[R12,#W_bgcol]
+\skip1		LDMFD	R13!,{R3,R4,PC}
+
+pd		BL	set_red
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_cooked
+		SWIEQ	256+'d'
+		BEQ	\skip
+		SWI	"XOS_WriteS"
+		STRZ	" No clock"
+		ALIGN
+\skip		B	pout
+
+pi		BL	set_green
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_noidle
+		BNE	\skip
+		TST	R4,#F_cooked
+		SWIEQ	256+'i'
+		SWIEQ	"XOS_NewLine"
+		BEQ	\skip
+		TST	R4,#F_needtick
+		BICNE	R4,R4,#F_needtick
+		STRNE	R4,[R12,#W_flags]
+		BLNE	set_yellow
+		SWINE	256+32
+		SWINE	256+128
+		BLNE	set_green
+		SWINE	"XOS_NewLine"
+		SWI	"XOS_WriteS"
+		DCS	" Idle"
+		DCB	13,10,0
+		ALIGN
+\skip		MOV	R5,#S_w_DestStn
+		STR	R5,[R12,#W_state]
+		B	pout
+
+po		BL	set_red
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_cooked
+		SWIEQ	256+'o'
+		BEQ	\skip
+		SWI	"XOS_WriteS"
+		STRZ	" Overrun"
+		ALIGN
+\skip		B	pout
+
+pe		BL	set_red
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_cooked
+		SWIEQ	256+'e'
+		BEQ	\skip
+		SWI	"XOS_WriteS"
+		STRZ	" CRC error"
+		ALIGN
+\skip		B	pout
+
+pb		BL	set_red
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_cooked
+		SWIEQ	256+'b'
+		BEQ	\skip
+		SWI	"XOS_WriteS"
+		STRZ	" Aborted"
+		ALIGN
+\skip		B	pout
+
+process_rda	ADD	R9,R9,#1
+		BL	pdata
+		ADD	R9,R9,#1
+		BL	pdata
+		ADD	R9,R9,#2
+		B	carry_on
+
+maybe_ip	LDR	R4,[R12,#W_flags]
+		TST	R4,#F_isIP
+		MOVEQ	PC,R14
+		STMFD	R13!,{R14}
+		SWI	256+32
+		BIC	R4,R4,#F_isIP
+		STR	R4,[R12,#W_flags]
+		LDR	R1,[R12,#W_datasize]
+		LDR	R2,[R12,#W_bytesToGet]
+		SUB	R1,R1,R2
+		LDR	R0,[R12,#W_dataBuffer]
+		SWI	IPMonitor_DecodePacket
+		LDR	R2,[R12,#W_dataBuffer]
+		MOV	R0,#7
+		SWI	"XOS_Module"
+		LDMFD	R13!,{PC}
+
+process_ap	LDR	R5,[R12,#W_state]
+		TEQ	R5,#S_w_DataStore
+		BLEQ	maybe_ip
+		TEQ	R5,#S_cutoff
+		TEQNE	R5,#S_w_DataByte
+		TEQNE	R5,#S_w_AckDataFirst
+		TEQNE	R5,#S_w_DataStore
+		TEQNE	R5,#S_w_AsciiByte
+		TEQNE	R5,#S_w_AsciiStore
+		LDREQ	R5,[R12,#W_nextstate]
+		STREQ	R5,[R12,#W_state]
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_cooked
+		SWIEQ	256+32
+		ADD	R9,R9,#2
+		BL	pdata
+		ADD	R9,R9,#2
+		B	carry_on
+
+pv		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_cooked
+		BNE	\skip
+		BL	set_green
+		SWI	256+'v'
+\skip		TST	R0,#128		; may have one byte RDA as well
+		BEQ	pout
+		ADD	R9,R9,#1
+		BL	pdata
+		ADD	R9,R9,#3
+		B	carry_on
+
+w_AsciiByte	STMFD	R13!,{R14}
+		LDRB	R0,[R9]
+		TEQ	R0,#13
+		MOVEQ	R5,#S_cutoff
+		STREQ	R5,[R12,#W_state]
+		LDMEQFD	R13!,{PC}
+		CMP	R0,#32
+		BLT	\hex
+		CMP	R0,#127
+		BGT	\hex
+		BL	set_white
+		SWI	"XOS_WriteC"
+		LDMFD	R13!,{PC}
+\hex		BL	set_reverse
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#8
+		SWI	"XOS_ConvertHex2"
+		SWI	"XOS_Write0"
+		LDMFD	R13!,{PC}
+
+pdata
+		LDR	R5,[R12,#W_state]
+		TEQ	R5,#S_cutoff
+		MOVEQ	PC,R14
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_cooked
+		LDREQB	R0,[R9]
+		BEQ	print_hex
+		TEQ	R5,#S_w_DestStn
+		BEQ	w_DestStn
+		TEQ	R5,#S_w_DestNet
+		BEQ	w_DestNet
+		TEQ	R5,#S_w_TxStn
+		BEQ	w_TxStn
+		TEQ	R5,#S_w_TxNet
+		BEQ	w_TxNet
+		TEQ	R5,#S_w_DataByte
+		BEQ	w_DataByte
+		TEQ	R5,#S_w_AsciiByte
+		BEQ	w_AsciiByte
+		TEQ	R5,#S_w_AsciiStore
+		BEQ	w_AsciiStore
+		TEQ	R5,#S_w_Cb
+		BEQ	w_Cb
+		TEQ	R5,#S_w_Port
+		BEQ	w_Port
+		TEQ	R5,#S_w_BroadcastCb
+		BEQ	w_BroadcastCb
+		TEQ	R5,#S_w_BroadcastPort
+		BEQ	w_BroadcastPort
+		TEQ	R5,#S_w_AckDestStn
+		BEQ	w_AckDestStn
+		TEQ	R5,#S_w_AckDestNet
+		BEQ	w_AckDestNet
+		TEQ	R5,#S_w_AckTxStn
+		BEQ	w_AckTxStn
+		TEQ	R5,#S_w_AckTxNet
+		BEQ	w_AckTxNet
+		TEQ	R5,#S_w_DataStore
+		BEQ	w_DataStore
+		TEQ	R5,#S_w_AckDataFirst
+		BEQ	w_AckDataFirst
+		TEQ	R5,#S_w_DataDestStn
+		BEQ	w_DataDestStn
+		TEQ	R5,#S_w_DataDestNet
+		BEQ	w_DataDestNet
+		TEQ	R5,#S_w_DataTxStn
+		BEQ	w_DataTxStn
+		TEQ	R5,#S_w_DataTxNet
+		BEQ	w_DataTxNet
+		STMFD	R13!,{R14}
+		SWI	"XOS_WriteS"
+		STRZ	"[un-handled state]"
+		ALIGN
+		MOV	R5,#S_w_DataByte
+		STR	R5,[R12,#W_state]
+		LDMFD	R13!,{PC}
+
+w_DataStore
+		LDR	R3,[R12,#W_bytesToGet]
+		MOVS	R3,R3
+		BEQ	\done1
+		LDRB	R0,[R9]
+		LDR	R2,[R12,#W_dataPtr]
+		STRB	R0,[R2],#1
+		STR	R2,[R12,#W_dataPtr]
+		SUBS	R3,R3,#1
+		STR	R3,[R12,#W_bytesToGet]
+		MOVNE	PC,R14
+\done		LDR	R1,[R12,#W_callmeback]
+		MOV	R5,#S_w_DataByte
+		STR	R5,[R12,#W_state]
+		MOV	PC,R1
+\done1		STMFD	R13!,{R14}
+		SWI	256+'!'
+		LDMFD	R13!,{R14}
+		B	\done
+
+w_AsciiStore
+		LDRB	R0,[R9]
+		LDR	R2,[R12,#W_dataPtr]
+		TEQ	R0,#13
+		MOVEQ	R0,#0
+		STRB	R0,[R2],#1
+		STR	R2,[R12,#W_dataPtr]
+		MOVS	R0,R0
+		MOVNE	PC,R14
+\done		LDR	R1,[R12,#W_callmeback]
+		MOV	R5,#S_w_DataByte
+		STR	R5,[R12,#W_state]
+		MOV	PC,R1
+
+w_DestStn	LDRB	R0,[R9]
+		STRB	R0,[R12,#W_RxStn]
+		MOV	R5,#S_w_DestNet
+		STR	R5,[R12,#W_state]
+		MOV	PC,R14
+
+w_DestNet	LDRB	R0,[R9]
+		STRB	R0,[R12,#W_RxNet]
+		MOV	R5,#S_w_TxStn
+		STR	R5,[R12,#W_state]
+		MOV	PC,R14
+
+w_DataDestStn	LDRB	R0,[R9]
+		STRB	R0,[R12,#W_RxStn]
+		MOV	R5,#S_w_DataDestNet
+		STR	R5,[R12,#W_state]
+		MOV	PC,R14
+
+w_DataDestNet	LDRB	R0,[R9]
+		STRB	R0,[R12,#W_RxNet]
+		MOV	R5,#S_w_DataTxStn
+		STR	R5,[R12,#W_state]
+		MOV	PC,R14
+
+w_TxStn		LDRB	R0,[R9]
+		STRB	R0,[R12,#W_TxStn]
+		MOV	R5,#S_w_TxNet
+		STR	R5,[R12,#W_state]
+		MOV	PC,R14
+
+w_DataTxStn	LDRB	R0,[R9]
+		STRB	R0,[R12,#W_TxStn]
+		MOV	R5,#S_w_DataTxNet
+		STR	R5,[R12,#W_state]
+		MOV	PC,R14
+
+txbridge	STMFD	R13!,{R14}
+		SWI	"XOS_WriteS"
+		STRZ	"Brdg#"
+		ALIGN
+		LDRB	R0,[R12,#W_TxNet]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		LDMFD	R13!,{PC}^
+
+w_DataTxNet	STMFD	R13!,{R14}
+		LDRB	R0,[R9]
+		STRB	R0,[R12,#W_TxNet]
+		BL	set_purple
+		LDR	R0,[R12,#W_scratchspace]
+		LDRB	R1,[R12,#W_TxStn]
+		MOVS	R1,R1
+		BLEQ	txbridge
+		BEQ	\skip
+		STR	R1,[R0]
+		LDRB	R1,[R12,#W_TxNet]
+		STR	R1,[R0,#4]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#16
+		SWI	"XOS_ConvertFixedNetStation"
+		SWI	"XOS_Write0"
+\skip		SWI	"XOS_WriteS"
+		DCB	32,137,32,0
+		ALIGN
+		LDR	R0,[R12,#W_scratchspace]
+		LDRB	R1,[R12,#W_RxStn]
+		STR	R1,[R0]
+		LDRB	R1,[R12,#W_RxNet]
+		STR	R1,[R0,#4]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#16
+		SWI	"XOS_ConvertFixedNetStation"
+		SWI	"XOS_Write0"
+		BL	set_white
+		MOV	R5,#S_w_AckDestStn
+		STR	R5,[R12,#W_nextstate]
+		LDRB	R0,[R12,#W_port]
+		TEQ	R0,#&D2
+		BEQ	data_tcpip
+		TEQ	R0,#&99
+		BEQ	data_fscommand
+data_unknown	SWI	"XOS_WriteS"
+		STRZ	" Data "
+		ALIGN
+		MOV	R5,#S_w_DataByte
+		STR	R5,[R12,#W_state]
+		LDMFD	R13!,{PC}
+
+data_tcpip	SWI	"XOS_WriteS"
+		STRZ	" IP"
+		ALIGN
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_doIP
+		BEQ	data_unknown
+		LDRB	R0,[R12,#W_Cb]
+		TEQ	R0,#&81
+		BEQ	ip_packet
+		TEQ	R0,#&A2
+		BNE	data_unknown
+		LDR	R1,[R12,#W_scratchspace]
+		STR	R1,[R12,#W_dataBuffer]
+		STR	R1,[R12,#W_dataPtr]
+		MOV	R1,#8
+		STR	R1,[R12,#W_bytesToGet]
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		ADR	R1,arpreply_handler
+		STR	R1,[R12,#W_callmeback]
+		LDMFD	R13!,{PC}
+
+ip_packet	LDR	R4,[R12,#W_flags]
+		ORR	R4,R4,#F_isIP
+		STR	R4,[R12,#W_flags]
+		MOV	R0,#6
+		MOV	R3,#&1000
+		STR	R3,[R12,#W_datasize]
+		STR	R3,[R12,#W_bytesToGet]
+		SWI	"OS_Module"
+		STR	R2,[R12,#W_dataBuffer]
+		STR	R2,[R12,#W_dataPtr]
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		ADR	R1,ip_moredata_handler
+		STR	R1,[R12,#W_callmeback]
+		LDMFD	R13!,{PC}
+
+ip_moredata_handler
+		STMFD	R13!,{R14}
+		MOV	R3,#&1000
+		STR	R3,[R12,#W_bytesToGet]
+		LDR	R2,[R12,#W_dataBuffer]
+		MOV	R0,#13
+		SWI	"OS_Module"
+		LDR	R6,[R12,#W_datasize]
+		STR	R2,[R12,#W_dataBuffer]
+		ADD	R2,R2,R6
+		STR	R2,[R12,#W_dataPtr]
+		ADD	R6,R6,#&1000
+		STR	R6,[R12,#W_datasize]
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		LDMFD	R13!,{PC}
+
+data_fscommand
+		SWI	256+32
+		LDR	R1,[R12,#W_scratchspace]
+		STR	R1,[R12,#W_dataBuffer]
+		STR	R1,[R12,#W_dataPtr]
+		MOV	R1,#2
+		STR	R1,[R12,#W_bytesToGet]
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		ADR	R1,fscommand_handler
+		STR	R1,[R12,#W_callmeback]
+		LDMFD	R13!,{PC}
+
+fscommand_handler
+		STMFD	R13!,{R14}
+		LDR	R1,[R12,#W_dataBuffer]
+		LDRB	R0,[R1,#1]
+		MOVS	R0,R0
+		BEQ	fscommand_cli
+		TEQ	R0,#1
+		BEQ	fscommand_save
+		TEQ	R0,#2
+		BEQ	fscommand_load
+		TEQ	R0,#3
+		BEQ	fscommand_examine
+		TEQ	R0,#4
+		BEQ	fscommand_catheader
+		TEQ	R0,#5
+		BEQ	fscommand_loadas
+		TEQ	R0,#6
+		BEQ	fscommand_open
+		TEQ	R0,#7
+		BEQ	fscommand_close
+		TEQ	R0,#8
+		BEQ	fscommand_bget
+		TEQ	R0,#9
+		BEQ	fscommand_bput
+		SWI	"XOS_WriteS"
+		STRZ	"Data "
+		ALIGN
+		MOV	R2,#5
+\loop		LDRB	R0,[R1],#1
+		BL	print_databyte
+		SUBS	R2,R2,#1
+		BNE	\loop
+		MOV	R5,#S_w_DataByte
+		STR	R5,[R12,#W_state]
+		LDMFD	R13!,{PC}
+
+fscommand_cli	SWI	256+'*'
+		LDR	R1,[R12,#W_scratchspace]
+		STR	R1,[R12,#W_dataBuffer]
+		STR	R1,[R12,#W_dataPtr]
+		MOV	R1,#3
+		STR	R1,[R12,#W_bytesToGet]
+		ADR	R1,fscommand_cli_handler
+		STR	R1,[R12,#W_callmeback]
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		LDMFD	R13!,{PC}
+
+fscommand_cli_handler
+		STMFD	R13!,{R14}
+		MOV	R5,#S_w_AsciiByte
+		STR	R5,[R12,#W_state]
+		LDMFD	R13!,{PC}
+
+fscommand_save	SWI	"XOS_WriteS"
+		STRZ	"Save "
+		ALIGN
+		LDR	R1,[R12,#W_scratchspace]
+		STR	R1,[R12,#W_dataBuffer]
+		STR	R1,[R12,#W_dataPtr]
+		MOV	R1,#15
+		STR	R1,[R12,#W_bytesToGet]
+		ADR	R1,fscommand_save_handler
+		STR	R1,[R12,#W_callmeback]
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		LDMFD	R13!,{PC}
+
+fscommand_save_handler
+		STMFD	R13!,{R14}
+		MOV	R5,#S_w_AsciiStore
+		STR	R5,[R12,#W_state]
+		ADR	R1,fscommand_save_handler2
+		STR	R1,[R12,#W_callmeback]
+		LDMFD	R13!,{PC}
+
+fscommand_save_handler2
+		STMFD	R13!,{R14}
+		LDR	R1,[R12,#W_dataBuffer]
+		ADD	R1,R1,#12
+		SWI	"XOS_Write0"
+		SWI	256+32
+		LDMFD	R13!,{PC}
+
+fscommand_load
+		SWI	"XOS_WriteS"
+		STRZ	"Load "
+		ALIGN
+fscommand_load1
+		MOV	R1,#3
+		STR	R1,[R12,#W_bytesToGet]
+		LDR	R1,[R12,#W_scratchspace]
+		STR	R1,[R12,#W_dataPtr]
+		STR	R1,[R12,#W_dataBuffer]
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		ADR	R1,fscommand_load_handler
+		STR	R1,[R12,#W_callmeback]
+		LDMFD	R13!,{PC}
+
+fscommand_load_handler
+		STMFD	R13!,{R14}
+		MOV	R5,#S_w_AsciiByte
+		STR	R5,[R12,#W_state]
+		LDMFD	R13!,{PC}
+
+fscommand_examine
+		SWI	"XOS_WriteS"
+		STRZ	"Examine "
+		ALIGN
+		MOV	R1,#6
+		STR	R1,[R12,#W_bytesToGet]
+		LDR	R1,[R12,#W_scratchspace]
+		STR	R1,[R12,#W_dataPtr]
+		STR	R1,[R12,#W_dataBuffer]
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		ADR	R1,examine_handler
+		STR	R1,[R12,#W_callmeback]
+		LDMFD	R13!,{PC}
+
+examine_handler	STMFD	R13!,{R14}
+		SWI	256+'('
+		LDR	R3,[R12,#W_dataBuffer]
+		LDRB	R0,[R3,#3]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#4
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+32
+		LDRB	R0,[R3,#4]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#4
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+32
+		LDRB	R0,[R3,#5]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#4
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+')'
+		SWI	256+' '
+		MOV	R5,#S_w_AsciiByte
+		STR	R5,[R12,#W_state]
+		LDMFD	R13!,{PC}
+
+fscommand_catheader
+		SWI	"XOS_WriteS"
+		STRZ	"Catalogue header "
+		ALIGN
+		MOV	R5,#S_w_AsciiByte
+		STR	R5,[R12,#W_state]
+		LDMFD	R13!,{PC}
+
+fscommand_loadas
+		SWI	"XOS_WriteS"
+		STRZ	"Load as *cmd "
+		ALIGN
+		B	fscommand_load1
+
+fscommand_open
+		SWI	"XOS_WriteS"
+		STRZ	"OPEN"
+		ALIGN
+		MOV	R1,#5
+		STR	R1,[R12,#W_bytesToGet]
+		LDR	R1,[R12,#W_scratchspace]
+		STR	R1,[R12,#W_dataPtr]
+		STR	R1,[R12,#W_dataBuffer]
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		ADR	R1,open_handler
+		STR	R1,[R12,#W_callmeback]
+		LDMFD	R13!,{PC}
+
+open_handler	STMFD	R13!,{R14}
+		LDR	R1,[R12,#W_dataBuffer]
+		LDRB	R2,[R1,#4]
+		MOVS	R2,R2
+		ADRNE	R0,\in
+		BNE	\display
+		LDRB	R2,[R1,#3]
+		MOVS	R2,R2
+		ADREQ	R0,\out
+		ADRNE	R0,\up
+\display	SWI	"XOS_Write0"
+		SWI	256+32
+		MOV	R5,#S_w_AsciiByte
+		STR	R5,[R12,#W_state]
+		LDMFD	R13!,{PC}
+\in		STRZ	"IN"
+\out		STRZ	"OUT"
+\up		STRZ	"UP"
+		ALIGN
+
+fscommand_close
+		SWI	"XOS_WriteS"
+		STRZ	"Close #"
+		ALIGN
+		LDR	R1,[R12,#W_scratchspace]
+		STR	R1,[R12,#W_dataPtr]
+		STR	R1,[R12,#W_dataBuffer]
+		MOV	R1,#3
+		STR	R1,[R12,#W_bytesToGet]
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		ADR	R1,dummy_handler
+		STR	R1,[R12,#W_callmeback]
+		LDMFD	R13!,{PC}
+
+dummy_handler	MOV	PC,R14
+
+fscommand_bget	SWI	"XOS_WriteS"
+		STRZ	"BGET "
+		ALIGN
+		LDR	R1,[R12,#W_scratchspace]
+		STR	R1,[R12,#W_dataPtr]
+		STR	R1,[R12,#W_dataBuffer]
+		MOV	R1,#1
+		STR	R1,[R12,#W_bytesToGet]
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		ADR	R1,bget_handler
+		STR	R1,[R12,#W_callmeback]
+		LDMFD	R13!,{PC}
+
+bget_handler	STMFD	R13!,{R14}
+		LDR	R3,[R12,#W_dataBuffer]
+		LDRB	R0,[R3]
+		SWI	256+'#'
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#6
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		LDMFD	R13!,{PC}
+
+fscommand_bput	SWI	"XOS_WriteS"
+		STRZ	"BPUT "
+		ALIGN
+		LDR	R1,[R12,#W_scratchspace]
+		STR	R1,[R12,#W_dataPtr]
+		STR	R1,[R12,#W_dataBuffer]
+		MOV	R1,#2
+		STR	R1,[R12,#W_bytesToGet]
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		ADR	R1,bput_handler
+		STR	R1,[R12,#W_callmeback]
+		LDMFD	R13!,{PC}
+
+bput_handler	STMFD	R13!,{R14}
+		LDR	R3,[R12,#W_dataBuffer]
+		LDRB	R0,[R3]
+		SWI	256+'#'
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#6
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	"XOS_WriteS"
+		STRZ	", &"
+		ALIGN
+		LDRB	R0,[R3,#1]
+		SWI	256+'#'
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#6
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		LDMFD	R13!,{PC}
+
+arpreply_handler
+		STMFD	R13!,{R14}
+		SWI	256+32
+		LDR	R4,[R12,#W_dataBuffer]
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4,#1]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4,#2]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4,#3]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	"XOS_WriteS"
+		DCB	32,137,32,0
+		ALIGN
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4,#4]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4,#5]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4,#6]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4,#7]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	"XOS_WriteS"
+		STRZ	" ARP Reply"
+		ALIGN
+		LDMFD	R13!,{PC}
+
+w_TxNet		STMFD	R13!,{R14}
+		LDRB	R0,[R9]
+		STRB	R0,[R12,#W_TxNet]
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_station
+		BEQ	\okstation
+		MOV	R1,R0
+		LDRB	R0,[R12,#W_TxStn]
+		BL	validate_station
+		MOVS	R0,R0
+		BNE	\okstation
+		LDRB	R0,[R12,#W_RxStn]
+		LDRB	R1,[R12,#W_RxNet]
+		BL	validate_station
+		MOVS	R0,R0
+		BEQ	badstation
+\okstation	MOV	R5,#S_w_Cb
+		STR	R5,[R12,#W_state]
+		LDR	R4,[R12,#W_flags]
+		BIC	R4,R4,#F_noidle
+		STR	R4,[R12,#W_flags]
+		BL	set_purple
+		LDR	R0,[R12,#W_scratchspace]
+		LDRB	R1,[R12,#W_TxStn]
+		MOVS	R1,R1
+		BLEQ	txbridge
+		BEQ	\skip
+		STR	R1,[R0]
+		LDRB	R1,[R12,#W_TxNet]
+		STR	R1,[R0,#4]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#16
+		SWI	"XOS_ConvertFixedNetStation"
+		SWI	"XOS_Write0"
+\skip		SWI	"XOS_WriteS"
+		DCB	32,137,32,0
+		ALIGN
+		LDRB	R1,[R12,#W_RxStn]
+		TEQ	R1,#255
+		BEQ	isBroadcast
+		LDR	R0,[R12,#W_scratchspace]
+		STR	R1,[R0]
+		LDRB	R1,[R12,#W_RxNet]
+		STR	R1,[R0,#4]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#16
+		SWI	"XOS_ConvertFixedNetStation"
+		SWI	"XOS_Write0"
+		SWI	256+32
+		BL	set_white
+		LDMFD	R13!,{PC}
+
+badstation	MOV	R5,#S_cutoff
+		STR	R5,[R12,#W_state]
+		LDR	R4,[R12,#W_flags]
+		ORR	R4,R4,#F_noidle
+		STR	R4,[R12,#W_flags]
+		LDMFD	R13!,{PC}
+
+validate_station
+		STMFD	R13!,{R2,R3,R6,R7,R14}
+		LDR	R6,[R12,#W_filterlist]
+		LDR	R7,[R12,#W_filtercount]
+		MOVS	R7,R7
+		BEQ	\bad
+		MVN	R4,#0
+\loop
+		LDR	R2,[R6],#4
+		LDR	R3,[R6],#4
+		TEQ	R2,R0
+		BNE	\no
+		TEQ	R3,R4
+		TEQNE	R3,R1
+		MOVEQ	R0,#1
+		LDMEQFD	R13!,{R2,R3,R6,R7,PC}
+\no		SUBS	R7,R7,#1
+		BNE	\loop
+\bad		MOV	R0,#0
+		LDMFD	R13!,{R2,R3,R6,R7,PC}
+
+isBroadcast	BL	set_white
+		SWI	"XOS_WriteS"
+		STRZ	"   Brdcast "
+		ALIGN
+		LDRB	R0,[R12,#W_RxNet]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+32
+		MOV	R5,#S_w_BroadcastCb
+		STR	R5,[R12,#W_state]
+		LDMFD	R13!,{PC}
+
+w_BroadcastCb	STMFD	R13!,{R14}
+		LDRB	R0,[R9]
+		STRB	R0,[R12,#W_Cb]
+		MOV	R5,#S_w_BroadcastPort
+		STR	R5,[R12,#W_state]
+		LDMFD	R13!,{PC}
+
+bcast_tcpip	LDRB	R0,[R12,#W_Cb]
+		TEQ	R0,#&A1
+		BNE	bcast_unknown
+		SWI	"XOS_WriteS"
+		STRZ	"IP "
+		ALIGN
+		MOV	R0,#8
+		STR	R0,[R12,#W_bytesToGet]
+		LDR	R1,[R12,#W_scratchspace]
+		STR	R1,[R12,#W_dataBuffer]
+		STR	R1,[R12,#W_dataPtr]
+		MOV	R5,#S_w_DestStn
+		STR	R5,[R12,#W_nextstate]
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		ADR	R1,arp_handler
+		STR	R1,[R12,#W_callmeback]
+		LDMFD	R13!,{PC}
+
+arp_handler	STMFD	R13!,{R14}
+		LDR	R4,[R12,#W_dataBuffer]
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4,#1]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4,#2]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4,#3]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	"XOS_WriteS"
+		DCB	32,137,32,0
+		ALIGN
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4,#4]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4,#5]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4,#6]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	256+46
+		LDR	R1,[R12,#W_convbuffer]
+		LDRB	R0,[R4,#7]
+		MOV	R2,#8
+		SWI	"XOS_ConvertCardinal1"
+		SWI	"XOS_Write0"
+		SWI	"XOS_WriteS"
+		STRZ	" ARP Query"
+		ALIGN
+		LDMFD	R13!,{PC}
+
+w_BroadcastPort	STMFD	R13!,{R14}
+		LDRB	R0,[R9]
+		STRB	R0,[R12,#W_port]
+		TEQ	R0,#&D2
+		BEQ	bcast_tcpip
+bcast_unknown	LDRB	R0,[R12,#W_Cb]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#8
+		SWI	"XOS_ConvertHex2"
+		SWI	256+'#'
+		SWI	"XOS_Write0"
+		LDRB	R0,[R12,#W_port]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#8
+		SWI	"XOS_ConvertHex2"
+		SWI	256+32
+		SWI	256+'('
+		SWI	"XOS_Write0"
+		SWI	256+')'
+		SWI	256+32
+		MOV	R5,#S_w_DataByte
+		STR	R5,[R12,#W_state]
+		MOV	R5,#S_w_DestStn
+		STR	R5,[R12,#W_nextstate]
+		LDMFD	R13!,{PC}
+
+w_DataByte	LDRB	R0,[R9]
+print_databyte	STMFD	R13!,{R1-R12,R14}
+		LDR	R4,[R12,#W_flags]
+		TST	R4,#F_dispASCII
+		BEQ	print_hex1
+		CMP	R0,#32
+		BLT	print_hex1
+		CMP	R0,#126
+		BGT	print_hex1
+		BL	set_reverse
+\skip		SWI	"XOS_WriteC"
+		LDMFD	R13!,{R1-R12,PC}
+
+print_hex	STMFD	R13!,{R1-R12,R14}
+print_hex1	BL	set_white
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#8
+		SWI	"XOS_ConvertHex2"
+		SWI	"XOS_Write0"
+		LDMFD	R13!,{R1-R12,PC}
+
+w_Cb		LDRB	R0,[R9]
+		STRB	R0,[R12,#W_Cb]
+		MOV	R5,#S_w_Port
+		STR	R5,[R12,#W_state]
+		MOV	PC,R14
+
+w_Port		STMFD	R13!,{R14}
+		LDRB	R0,[R9]
+		STRB	R0,[R12,#W_port]
+		MOVS	R0,R0
+		BEQ	was_immediate
+		SWI	"XOS_WriteS"
+		STRZ	"Scout #"
+		ALIGN
+		LDRB	R0,[R12,#W_Cb]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#8
+		SWI	"XOS_ConvertHex2"
+		SWI	"XOS_Write0"
+		SWI	256+32
+		SWI	256+'('
+		LDRB	R0,[R12,#W_port]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#8
+		SWI	"XOS_ConvertHex2"
+		SWI	"XOS_Write0"
+		SWI	256+')'
+		MOV	R5,#S_w_DataByte
+		STR	R5,[R12,#W_state]
+		MOV	R5,#S_w_AckDestStn
+		STR	R5,[R12,#W_nextstate]
+		LDMFD	R13!,{PC}
+
+was_immediate
+		LDRB	R0,[R12,#W_Cb]
+		TEQ	R0,#&88
+		ADREQ	R0,mcpeek_txt
+		BEQ	imm_simple
+		TEQ	R0,#&87
+		ADREQ	R0,continue_txt
+		BEQ	imm_simple
+		TEQ	R0,#&86
+		ADREQ	R0,halt_txt
+		BEQ	imm_simple
+		TEQ	R0,#&85
+		BEQ	imm_ospc
+		TEQ	R0,#&84
+		BEQ	imm_upc
+		TEQ	R0,#&83
+		BEQ	imm_jsr
+		TEQ	R0,#&82
+		BEQ	imm_poke
+		TEQ	R0,#&81
+		BEQ	imm_peek
+		SWI	"XOS_WriteS"
+		STRZ	"Immediate #"
+		ALIGN
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#8
+		SWI	"XOS_ConvertHex2"
+		SWI	"XOS_Write0"
+		SWI	256+32
+		MOV	R5,#S_w_DataByte
+		STR	R5,[R12,#W_state]
+		MOV	R5,#S_w_AckDestStn
+		STR	R5,[R12,#W_nextstate]
+		LDMFD	R13!,{PC}
+
+halt_txt	STRZ	"Halt"
+continue_txt	STRZ	"Continue"
+mcpeek_txt	STRZ	"Machine type peek"
+		ALIGN
+
+imm_simple	SWI	"XOS_Write0"
+		MOV	R5,#S_cutoff
+		STR	R5,[R12,#W_state]
+		MOV	R5,#S_w_AckDestStn
+		STR	R5,[R12,#W_nextstate]
+		LDMFD	R13!,{PC}
+
+imm_ospc	MOV	R5,#S_w_AckDestStn
+		STR	R5,[R12,#W_nextstate]
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		MOV	R5,#S_w_AckDestStn
+		STR	R5,[R12,#W_nextstate]
+		LDR	R1,[R12,#W_scratchspace]
+		STR	R1,[R12,#W_dataBuffer]
+		STR	R1,[R12,#W_dataPtr]
+		MOV	R1,#4
+		STR	R1,[R12,#W_bytesToGet]
+		ADR	R1,ospc_handler
+		STR	R1,[R12,#W_callmeback]
+		LDMFD	R13!,{PC}
+
+ospc_handler	STMFD	R13!,{R14}
+		LDR	R3,[R12,#W_dataBuffer]
+		LDRB	R0,[R3]
+		MOVS	R0,R0
+		BEQ	ospc_charfromnotify
+		TEQ	R0,#1
+		BEQ	ospc_initialiseremote
+		TEQ	R0,#2
+		BEQ	ospc_getviewparams
+		TEQ	R0,#3
+		BEQ	ospc_fatal
+		TEQ	R0,#4
+		BEQ	ospc_charfromremote
+		SWI	"XOS_WriteS"
+		STRZ	"OS Procedure #"
+		ALIGN
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#8
+		SWI	"XOS_ConvertHex2"
+		SWI	"XOS_Write0"
+		LDMFD	R13!,{PC}
+
+ospc_charfromnotify
+		ADR	R0,\notify_txt
+ospc_display	SWI	"XOS_Write0"
+		LDMFD	R13!,{PC}
+ospc_initialiseremote
+		ADR	R0,\remote_txt
+		B	ospc_display
+ospc_getviewparams
+		ADR	R0,\view_txt
+		B	ospc_display
+ospc_fatal	ADR	R0,\fatal_txt
+		B	ospc_display
+ospc_charfromremote
+		ADR	R0,\remchar_txt
+		B	ospc_display
+\notify_txt	STRZ	"Insert character"
+\remote_txt	STRZ	"Initialise REMOTE"
+\view_txt	STRZ	"Get VIEW parameters"
+\fatal_txt	STRZ	"Fatal error"
+\remchar_txt	STRZ	"Char from REMOTE"
+		ALIGN
+
+imm_upc		SWI	"XOS_WriteS"
+		STRZ	"User Procedure "
+		ALIGN
+		MOV	R5,#S_w_DataByte
+		STR	R5,[R12,#W_state]
+		MOV	R5,#S_w_AckDestStn
+		STR	R5,[R12,#W_nextstate]
+		LDMFD	R13!,{PC}
+
+imm_peek	SWI	"XOS_WriteS"
+		STRZ	"Peek "
+		ALIGN
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		MOV	R5,#S_w_AckDestStn
+		STR	R5,[R12,#W_nextstate]
+		LDR	R1,[R12,#W_scratchspace]
+		STR	R1,[R12,#W_dataBuffer]
+		STR	R1,[R12,#W_dataPtr]
+		MOV	R1,#8
+		STR	R1,[R12,#W_bytesToGet]
+		ADR	R1,peekpoke_handler
+		STR	R1,[R12,#W_callmeback]
+		LDMFD	R13!,{PC}
+
+peekpoke_handler	STMFD	R13!,{R14}
+		LDR	R3,[R12,#W_dataBuffer]
+		LDR	R0,[R3]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#10
+		SWI	"XOS_ConvertHex8"
+		SWI	"XOS_Write0"
+		SWI	"XOS_WriteS"
+		DCB	32,137,32,0
+		ALIGN
+		LDR	R0,[R3,#4]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#10
+		SWI	"XOS_ConvertHex8"
+		SWI	"XOS_Write0"
+		LDMFD	R13!,{PC}
+
+imm_poke	SWI	"XOS_WriteS"
+		STRZ	"Poke "
+		ALIGN
+		MOV	R5,#S_w_DataStore
+		STR	R5,[R12,#W_state]
+		MOV	R5,#S_w_AckDestStn
+		STR	R5,[R12,#W_nextstate]
+		LDR	R1,[R12,#W_scratchspace]
+		STR	R1,[R12,#W_dataBuffer]
+		STR	R1,[R12,#W_dataPtr]
+		MOV	R1,#8
+		STR	R1,[R12,#W_bytesToGet]
+		ADR	R1,peekpoke_handler
+		STR	R1,[R12,#W_callmeback]
+		LDMFD	R13!,{PC}
+
+imm_jsr		SWI	"XOS_WriteS"
+		STRZ	"JSR "
+		ALIGN
+		MOV	R5,#S_w_DataByte
+		STR	R5,[R12,#W_state]
+		MOV	R5,#S_w_AckDestStn
+		STR	R5,[R12,#W_nextstate]
+		LDMFD	R13!,{PC}
+
+w_AckDestStn	LDRB	R0,[R9]
+		LDR	R1,[R12,#W_scratchspace]
+		STRB	R0,[R1,#2]
+		MOV	R5,#S_w_AckDestNet
+		STR	R5,[R12,#W_state]
+		MOV	PC,R14
+
+w_AckDestNet	LDRB	R0,[R9]
+		LDR	R1,[R12,#W_scratchspace]
+		STRB	R0,[R1,#3]
+		MOV	R5,#S_w_AckTxStn
+		STR	R5,[R12,#W_state]
+		MOV	PC,R14
+
+w_AckTxStn	LDRB	R0,[R9]
+		LDR	R1,[R12,#W_scratchspace]
+		STRB	R0,[R1,#0]
+		MOV	R5,#S_w_AckTxNet
+		STR	R5,[R12,#W_state]
+		MOV	PC,R14
+
+w_AckTxNet	STMFD	R13!,{R14}
+		LDRB	R0,[R9]
+		LDRB	R1,[R12,#W_RxNet]
+		TEQ	R0,R1
+		BNE	\bad
+		LDR	R2,[R12,#W_scratchspace]
+		LDRB	R0,[R2,#0]
+		LDRB	R1,[R12,#W_RxStn]
+		TEQ	R0,R1
+		BNE	\bad
+		BL	set_green
+		SWI	256+32
+		SWI	256+128
+		B	\done
+\bad		BL	set_red
+		SWI	256+32
+		SWI	256+'x'
+\done		MOV	R5,#S_w_DataDestStn		; an idle here will drop us into w_DestStn
+		STR	R5,[R12,#W_nextstate]
+		MOV	R5,#S_w_AckDataFirst
+		STR	R5,[R12,#W_state]
+		SWI	"XOS_NewLine"
+		LDMFD	R13!,{PC}
+
+w_AckDataFirst	STMFD	R13!,{R14}
+		BL	set_purple
+		LDR	R0,[R12,#W_scratchspace]
+		LDRB	R1,[R12,#W_RxStn]
+		STR	R1,[R0]
+		LDRB	R1,[R12,#W_RxNet]
+		STR	R1,[R0,#4]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#16
+		SWI	"XOS_ConvertFixedNetStation"
+		SWI	"XOS_Write0"
+		SWI	"XOS_WriteS"
+		DCB	32,137,32,0
+		ALIGN
+		LDR	R0,[R12,#W_scratchspace]
+		LDRB	R1,[R12,#W_TxStn]
+		STR	R1,[R0]
+		LDRB	R1,[R12,#W_TxNet]
+		STR	R1,[R0,#4]
+		LDR	R1,[R12,#W_convbuffer]
+		MOV	R2,#16
+		SWI	"XOS_ConvertFixedNetStation"
+		SWI	"XOS_Write0"
+		BL	set_white
+		SWI	"XOS_WriteS"
+		STRZ	" Data "
+		ALIGN
+		MOV	R5,#S_w_DataByte
+		STR	R5,[R12,#W_state]
+		LDR	R4,[R12,#W_flags]
+		ORR	R4,R4,#F_needtick
+		STR	R4,[R12,#W_flags]
+		LDMFD	R13!,{R14}
+		B	w_DataByte
+
+init		STMFD	R13!,{R1-R12,R14}
+		MOV	R0,#6
+		MOV	R3,#W_total_size
+		SWI	"XOS_Module"
+		LDMVSFD	R13!,{R1-R12,PC}
+		STR	R2,[R12]
+		MOV	R1,#W_total_size
+		MOV	R3,#0
+\blat		SUBS	R1,R1,#4
+		STR	R3,[R2,R1]
+		BNE	\blat
+		MOV	R12,R2
+		MOV	R3,#128
+		SWI	"XOS_Module"
+		STRVC	R2,[R12,#W_scratchspace]
+		MOVVC	R3,#80
+		SWIVC	"XOS_Module"
+		STRVC	R2,[R12,#W_convbuffer]
+		LDMFD	R13!,{R1-R12,PC}
+
+claim_fiq	STMFD	R13!,{R0-R12,R14}
+		LDR	R0,[R12,#W_flags]
+		ORR	R0,R0,#F_serviceWasMe
+		STR	R0,[R12,#W_flags]
+		MOV	R1,#&C
+		SWI	"XOS_ServiceCall"
+		LDR	R0,[R12,#W_flags]
+		BIC	R0,R0,#F_serviceWasMe
+		STR	R0,[R12,#W_flags]
+		LDR	R1,fiq_mask_ptr
+		MOV	R0,#0
+		STR	R0,[R1]
+		LDR	R11,[R12,#W_rxBuffer]
+		MOV	R10,#FW_bufferstart
+		STR	R11,[R10]
+		MOV	R1,#RxBufferSize
+\blat		SUBS	R1,R1,#4
+		STR	R0,[R11,R1]
+		BNE	\blat
+		ADD	R11,R11,#RxBufferSize
+		MOV	R10,#FW_bufferend
+		STR	R11,[R10]
+		MOV	R0,#&1C
+		ADR	R1,fiq_code
+		ADR	R2,fiq_code_end
+\copy		LDR	R3,[R1],#4
+		STR	R3,[R0],#4
+		TEQ	R1,R2
+		BNE	\copy
+		LDR	R1,chip
+		MOV	R0,#&C1			; RxRESET txRESET selCR3
+		STRB	R0,[R1,#cr1]
+		MOV	R0,#&1E			
+		STRB	R0,[R1,#cr4]
+		MOV	R0,#0
+		STRB	R0,[R1,#cr3]
+		MOV	R0,#&82			; -RxRESET RIE selCR2
+		STRB	R0,[R1,#cr1]		
+		MOV	R0,#sr2val
+		STRB	R0,[R1,#cr2]
+		TEQP	PC,#1			; into FIQ mode
+		MOV	R0,R0
+		LDR	R8,chip
+		MOV	R9,#FW_bufferstart
+		LDR	R9,[R9]
+		LDR	R12,fiq_mask_ptr
+		TEQP	PC,#3			; back to SVC mode
+		MOV	R0,R0
+		MOV	R0,#1<<2
+		LDR	R1,fiq_mask_ptr
+		STRB	R0,[R1]			; enable FIQ
+		LDMFD	R13!,{R0-R12,PC}
+
+chip		DCD	0x33A0000
+fiq_mask_ptr	DCD	0x3200038
+
+fiq_code	LDRB	R11,[R8,#sr2]		; watch out for duff status
+		MOVS	R11,R11
+		BNE	okstatus
+		LDRB	R11,[R8,#sr2]		
+		MOVS	R11,R11
+		BEQ	badstatus		; give up
+okstatus	STRB	R11,[R9],#1
+		TST	R11,#&80
+		BNE	got_rda
+		TST	R11,#1
+		ADDNE	R9,R9,#1
+		BNE	got_ap
+		TST	R11,#2		; frame valid?
+		ADDEQ	R9,R9,#1
+		BEQ	other_status
+		SUB	R9,R9,#1
+		MOV	R11,#0
+		STRB	R11,[R8,#cr2]
+		LDRB	R11,[R8,#sr2]
+		STRB	R11,[R9],#1
+		LDRB	R11,[R8,#datreg]
+		STRB	R11,[R9],#1
+		B	other_status
+got_rda		LDRB	R11,[R8,#datreg]
+		STRB	R11,[R9]
+		ADD	R9,R9,#1
+got_ap		LDRB	R11,[R8,#datreg]
+		STRB	R11,[R9]
+other_status	ADD	R9,R9,#2
+		MOV	R10,#FW_bufferend
+		LDR	R10,[R10]
+		CMP	R9,R10
+		MOVGE	R9,#FW_bufferstart
+		LDRGE	R9,[R9]
+		MOV	R11,#0
+		STRB	R11,[R9]
+badstatus	MOV	R11,#sr2val
+		STRB	R11,[R8,#cr2]
+		SUBS	PC,R14,#4
+fiq_code_end
+
+release_fiq	STMFD	R13!,{R0-R12,R14}
+		LDR	R1,fiq_mask_ptr
+		MOV	R0,#0
+		STR	R0,[R1]
+		LDR	R0,[R12,#W_flags]
+		ORR	R0,R0,#F_serviceWasMe
+		STR	R0,[R12,#W_flags]
+		MOV	R1,#&B
+		SWI	"XOS_ServiceCall"
+		LDR	R0,[R12,#W_flags]
+		BIC	R0,R0,#F_serviceWasMe
+		STR	R0,[R12,#W_flags]
+		LDMFD	R13!,{R0-R12,PC}
+
+final		STMFD	R13!,{R0-R12,R14}
+		LDR	R11,[R12]
+		LDR	R2,[R11,#W_convbuffer]
+		MOV	R0,#7
+		SWI	"XOS_Module"
+		MOVVS	R0,#7
+		LDR	R2,[R11,#W_scratchspace]
+		SWI	"XOS_Module"
+		MOVVS	R0,#7
+		MOV	R2,R11
+		SWI	"XOS_Module"
+		MOV	R2,#0
+		STR	R2,[R12]
+		LDMFD	R13!,{R0-R12,PC}^
